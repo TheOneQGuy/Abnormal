@@ -9,8 +9,8 @@ from PIL import Image, ImageTk
 FORMATS = [
     "OpenGL",
     "DirectX",
-    "RXGB NXG",
-    "RXGB TCS",
+    "RXGB 0",
+    "RXGB 255",
     "Half blue",
     "RXGB half blue",
     "Two channel",
@@ -69,13 +69,13 @@ def decode_to_normal(r, g, b, a, fmt, derivative_scale=1.0):
         nz = decode_signed(b)
         return normalize_vec3(nx, ny, nz)
 
-    if fmt == "RXGB NXG":
+    if fmt == "RXGB 0":
         nx = decode_signed(a)
         ny = decode_signed(g)
         nz = decode_signed(b)
         return normalize_vec3(nx, ny, nz)
 
-    if fmt == "RXGB TCS":
+    if fmt == "RXGB 255":
         nx = decode_signed(a)
         ny = decode_signed(g)
         nz = decode_signed(b)
@@ -95,8 +95,8 @@ def decode_to_normal(r, g, b, a, fmt, derivative_scale=1.0):
         return normalize_vec3(nx, ny, nz)
 
     if fmt == "Two channel":
-        nx = decode_signed(g)
-        ny = decode_signed(a)
+        nx = decode_signed(a)
+        ny = decode_signed(g)
         nz_sq = 1.0 - nx * nx - ny * ny
         nz = math.sqrt(max(0.0, nz_sq))
         return normalize_vec3(nx, ny, nz)
@@ -136,7 +136,7 @@ def encode_from_normal(nx, ny, nz, fmt, derivative_scale=1.0):
             255,
         )
 
-    if fmt == "RXGB NXG":
+    if fmt == "RXGB 0":
         return (
             0,
             encode_signed(ny),
@@ -144,7 +144,7 @@ def encode_from_normal(nx, ny, nz, fmt, derivative_scale=1.0):
             encode_signed(nx),
         )
 
-    if fmt == "RXGB TCS":
+    if fmt == "RXGB 255":
         return (
             255,
             encode_signed(ny),
@@ -172,9 +172,9 @@ def encode_from_normal(nx, ny, nz, fmt, derivative_scale=1.0):
     if fmt == "Two channel":
         return (
             255,
-            encode_signed(nx),
-            255,
             encode_signed(ny),
+            255,
+            encode_signed(nx),
         )
 
     if fmt == "Derivative":
@@ -289,14 +289,14 @@ class NormalMapConverterApp(tk.Tk):
         info_box.pack(side="right", fill="both", expand=False)
 
         notes = (
-            'OpenGL "purple": Regular normal maps we all know and love. Used in most games.\n\n'
+            'OpenGL "purple": Most common normal map type.\n\n'
             'DirectX "purple but flipped": Used in TSS and LDK, flipped version of OpenGL.\n\n'
-            'RXGB NXG "trans blue": Used in NXG and DX11 games.\n\n'
-            'RXGB TCS "trans pink": Used in classic games and maybe more.\n\n'
+            'RXGB 0 "trans blue": Used in NXG and DX11 games.\n\n'
+            'RXGB 255 "trans pink": Used in classic games and some NXG and DX11 games.\n\n'
             'Half blue "gray": Used in NXG and DX11 games.\n\n'
-            'RXGB half blue "trans teal": Used rarely in NXG and DX11 games.\n\n'
+            'RXGB half blue "trans teal": Used in NXG and DX11 games, mostly for levels but sometimes for other things too.\n\n'
             'Two channel "trans pink but weird": Used rarely in NXG and DX11 games.\n\n'
-            'Derivative "yellowish green": Used in TSS.'
+            'Derivative "yellowish green": Used in TSS, technically supported by DX11 too.'
         )
         ttk.Label(info_box, text=notes, justify="left").pack(anchor="w")
 
