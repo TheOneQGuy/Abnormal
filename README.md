@@ -20,8 +20,7 @@ Use by dragging an image file with a supported format onto the script. It will t
 
 This image shows the same normal map converted to each type (in order):
 
-<img width="5120" height="2048" alt="image" src="https://github.com/user-attachments/assets/7c6ae77e-c158-4d62-9bd8-e4bd58cf1203" />
-
+<img width="5120" height="2048" alt="image" src="https://github.com/user-attachments/assets/058485c7-84be-4e1c-aa05-157a1b2d8f16" />
 
 You can usually rely on the automatic detection and only type the ID for the type you want to convert to. In cases where the detection is wrong, type both the input and output type (e.g. `3, 6` for DirectX to B128).
 
