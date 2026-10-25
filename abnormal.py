@@ -90,7 +90,7 @@ def detect_nrm_type(nrm_image:Image.Image) -> Nrm_type:
     #print(winners[0][0].code, winners[1][0].code, sum(blues)/64)
 
     if (winners[0][0].code=='_yzx' and
-        winners[1][0].code=='_x_y' and
+        winners[1][0].code=='_y_x' and
         sum(blues)/64/64 >254):
 
         winner = winners[1][0]
@@ -313,7 +313,7 @@ def main():
         Nrm_type('RXGB-R',        (None,128,255,128),    (None,None,None,None),  "ryzx"), #trans-blue
         Nrm_type('B128',          (128,128,128,None),    (None,None,None,255),   "xyZ_"), #gray
         Nrm_type('RXGB-B128-R',   (None,128,128,128),    (None,None,None,None),  "ryZx"), #trans-teal - trans-pink
-        Nrm_type('TwoChannel-R',  (None,128,None,128),   (None,None,255,None),   "_x_y"), #trans-pink
+        Nrm_type('TwoChannel-R',  (None,128,None,128),   (None,None,255,None),   "_y_x"), #trans-pink
         Nrm_type('Derivative',    (128,128,None,None),   (None,None,0,255),      "dD-_"), #green
         Nrm_type('BRDF',          None,                  (None,None,None,None),  "_r__"), #any
     )
