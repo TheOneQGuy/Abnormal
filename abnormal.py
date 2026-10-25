@@ -1,405 +1,393 @@
-import math
-import os
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from sys import argv, exit
+from pathlib import Path
+from collections import namedtuple
+import traceback
+from json import loads, JSONDecodeError
+from math import sqrt
+
+def error(text):
+    print("An error occoured:")
+    print(text)
+    print("Press enter to close.")
+    input()
+    exit()
+
+try:
+    from PIL import Image
+except ModuleNotFoundError:
+    error("Pillow is required. Install by running this in the terminal: py -m pip install Pillow")
+
+def detect_nrm_type(nrm_image:Image.Image) -> Nrm_type:
+    """
+    Tries to detect normal map type by checking image
+    against medium values given in nrm_types and also
+    always-expected values coming from unused channels.
+
+    Will not detect DirectX or BRDF because they aren't
+    easily detectable.
+    """
+    nrm_image = nrm_image.resize((64,64))
+    nrm_pixels = nrm_image.load()
+
+    avrg_color_scores = {}
+
+    for nrm_type in nrm_types:
+        avrg_color_scores[nrm_type] = []
+
+    blues = []
+
+    for x in range(64):
+      for y in range(64):
+        #print()
+        current_pixel = nrm_pixels[x,y]
+        blues.append(current_pixel[2])
 
-from PIL import Image, ImageTk
-
-
-FORMATS = [
-    "OpenGL",
-    "DirectX",
-    "RXGB 0",
-    "RXGB 255",
-    "Half blue",
-    "RXGB half blue",
-    "Two channel",
-    "Derivative",
-]
-
-
-# -----------------------------
-# Core helpers
-# -----------------------------
-
-def clamp01(x):
-    return max(0.0, min(1.0, x))
-
-
-def clamp255(x):
-    return max(0, min(255, int(round(x))))
-
-
-def normalize_vec3(x, y, z):
-    length = math.sqrt(x * x + y * y + z * z)
-    if length <= 1e-12:
-        return 0.0, 0.0, 1.0
-    return x / length, y / length, z / length
-
-
-def encode_signed(v):
-    # [-1, 1] -> [0, 255]
-    return clamp255((v * 0.5 + 0.5) * 255.0)
-
-
-def decode_signed(v):
-    # [0, 255] -> [-1, 1]
-    return (v / 255.0) * 2.0 - 1.0
-
-
-def open_image_as_rgba(path):
-    return Image.open(path).convert("RGBA")
-
-
-# -----------------------------
-# Pixel conversion logic
-# -----------------------------
-
-def decode_to_normal(r, g, b, a, fmt, derivative_scale=1.0):
-    """Convert one pixel from a source format into a normal vector (x, y, z)."""
-    if fmt == "OpenGL":
-        nx = decode_signed(r)
-        ny = decode_signed(g)
-        nz = decode_signed(b)
-        return normalize_vec3(nx, ny, nz)
-
-    if fmt == "DirectX":
-        nx = decode_signed(r)
-        ny = -decode_signed(g)
-        nz = decode_signed(b)
-        return normalize_vec3(nx, ny, nz)
-
-    if fmt == "RXGB 0":
-        nx = decode_signed(a)
-        ny = decode_signed(g)
-        nz = decode_signed(b)
-        return normalize_vec3(nx, ny, nz)
-
-    if fmt == "RXGB 255":
-        nx = decode_signed(a)
-        ny = decode_signed(g)
-        nz = decode_signed(b)
-        return normalize_vec3(nx, ny, nz)
-
-    if fmt == "Half blue":
-        nx = decode_signed(r)
-        ny = decode_signed(g)
-        # blue is half strength, so double it back on decode
-        nz = decode_signed(b * 2.0)
-        return normalize_vec3(nx, ny, nz)
-
-    if fmt == "RXGB half blue":
-        nx = decode_signed(a)
-        ny = decode_signed(g)
-        nz = decode_signed(b * 2.0)
-        return normalize_vec3(nx, ny, nz)
-
-    if fmt == "Two channel":
-        nx = decode_signed(a)
-        ny = decode_signed(g)
-        nz_sq = 1.0 - nx * nx - ny * ny
-        nz = math.sqrt(max(0.0, nz_sq))
-        return normalize_vec3(nx, ny, nz)
-
-    if fmt == "Derivative":
-        # Derivative maps store slopes, not normals.
-        # R = dfdx, G = dfdy. Blue is ignored.
-        # Reconstruct the normal from the tangent vectors:
-        # (1, 0, dfdx) x (0, 1, dfdy) = (-dfdx, -dfdy, 1)
-        dfdx = decode_signed(r) * derivative_scale
-        dfdy = decode_signed(g) * derivative_scale
-        nx = -dfdx
-        ny = -dfdy
-        nz = 1.0
-        return normalize_vec3(nx, ny, nz)
-
-    raise ValueError(f"Unknown source format: {fmt}")
-
-
-def encode_from_normal(nx, ny, nz, fmt, derivative_scale=1.0):
-    """Convert a normal vector (x, y, z) into a target format pixel."""
-    nx, ny, nz = normalize_vec3(nx, ny, nz)
-
-    if fmt == "OpenGL":
-        return (
-            encode_signed(nx),
-            encode_signed(ny),
-            encode_signed(nz),
-            255,
-        )
-
-    if fmt == "DirectX":
-        return (
-            encode_signed(nx),
-            encode_signed(-ny),
-            encode_signed(nz),
-            255,
-        )
-
-    if fmt == "RXGB 0":
-        return (
-            0,
-            encode_signed(ny),
-            encode_signed(nz),
-            encode_signed(nx),
-        )
-
-    if fmt == "RXGB 255":
-        return (
-            255,
-            encode_signed(ny),
-            encode_signed(nz),
-            encode_signed(nx),
-        )
-
-    if fmt == "Half blue":
-        # Blue channel is half the OpenGL blue value.
-        return (
-            encode_signed(nx),
-            encode_signed(ny),
-            clamp255(encode_signed(nz) * 0.5),
-            255,
-        )
-
-    if fmt == "RXGB half blue":
-        return (
-            0,
-            encode_signed(ny),
-            clamp255(encode_signed(nz) * 0.5),
-            encode_signed(nx),
-        )
-
-    if fmt == "Two channel":
-        return (
-            255,
-            encode_signed(ny),
-            255,
-            encode_signed(nx),
-        )
-
-    if fmt == "Derivative":
-        # Reverse the same relationship.
-        # normal ~ (-dfdx, -dfdy, 1), so:
-        # dfdx = -nx / nz, dfdy = -ny / nz
-        if abs(nz) < 1e-8:
-            dfdx = 0.0
-            dfdy = 0.0
-        else:
-            scale = max(1e-8, derivative_scale)
-            dfdx = (-nx / nz) / scale
-            dfdy = (-ny / nz) / scale
-
-        dfdx = max(-1.0, min(1.0, dfdx))
-        dfdy = max(-1.0, min(1.0, dfdy))
-        return (
-            encode_signed(dfdx),
-            encode_signed(dfdy),
-            0,
-            255,
-        )
-
-    raise ValueError(f"Unknown target format: {fmt}")
-
-
-def convert_image(input_image, source_fmt, target_fmt, derivative_scale=1.0):
-    src = input_image.convert("RGBA")
-    w, h = src.size
-    out = Image.new("RGBA", (w, h))
-    src_px = src.load()
-    out_px = out.load()
-
-    for y in range(h):
-        for x in range(w):
-            r, g, b, a = src_px[x, y]
-            nx, ny, nz = decode_to_normal(r, g, b, a, source_fmt, derivative_scale)
-            out_px[x, y] = encode_from_normal(nx, ny, nz, target_fmt, derivative_scale)
-
-    return out
-
-
-# -----------------------------
-# GUI
-# -----------------------------
-
-class NormalMapConverterApp(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("Abnormal (get it because it's irregular normals-)")
-        self.geometry("1060x720")
-        self.minsize(920, 620)
-
-        self.input_path = tk.StringVar(value="")
-        self.output_path = tk.StringVar(value="")
-        self.source_fmt = tk.StringVar(value="OpenGL")
-        self.target_fmt = tk.StringVar(value="DirectX")
-        self.derivative_scale = tk.DoubleVar(value=1.0)
-
-        self.original_image = None
-        self.preview_image = None
-        self.preview_tk = None
-
-        self._build_ui()
-
-    def _build_ui(self):
-        outer = ttk.Frame(self, padding=12)
-        outer.pack(fill="both", expand=True)
-
-        top = ttk.Frame(outer)
-        top.pack(fill="x")
-
-        file_box = ttk.LabelFrame(top, text="Files", padding=10)
-        file_box.pack(side="left", fill="x", expand=True, padx=(0, 10))
-
-        ttk.Label(file_box, text="Input:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(file_box, textvariable=self.input_path).grid(row=0, column=1, sticky="ew", padx=6)
-        ttk.Button(file_box, text="Browse...", command=self.browse_input).grid(row=0, column=2)
-
-        ttk.Label(file_box, text="Output:").grid(row=1, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(file_box, textvariable=self.output_path).grid(row=1, column=1, sticky="ew", padx=6, pady=(8, 0))
-        ttk.Button(file_box, text="Save As...", command=self.browse_output).grid(row=1, column=2, pady=(8, 0))
-
-        file_box.columnconfigure(1, weight=1)
-
-        fmt_box = ttk.LabelFrame(top, text="Conversion", padding=10)
-        fmt_box.pack(side="right", fill="y")
-
-        ttk.Label(fmt_box, text="Source format:").grid(row=0, column=0, sticky="w")
-        ttk.OptionMenu(fmt_box, self.source_fmt, self.source_fmt.get(), *FORMATS).grid(row=0, column=1, sticky="ew", padx=6)
-
-        ttk.Label(fmt_box, text="Target format:").grid(row=1, column=0, sticky="w", pady=(8, 0))
-        ttk.OptionMenu(fmt_box, self.target_fmt, self.target_fmt.get(), *FORMATS).grid(row=1, column=1, sticky="ew", padx=6, pady=(8, 0))
-
-        #ttk.Label(fmt_box, text="Derivative scale:").grid(row=2, column=0, sticky="w", pady=(8, 0))
-        #ttk.Spinbox(fmt_box, from_=0.01, to=1000.0, increment=0.1, textvariable=self.derivative_scale, width=10).grid(row=2, column=1, sticky="ew", padx=6, pady=(8, 0))
-
-        ttk.Button(fmt_box, text="Convert", command=self.convert).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
-
-        fmt_box.columnconfigure(1, weight=1)
-
-        mid = ttk.Frame(outer)
-        mid.pack(fill="both", expand=True, pady=(12, 0))
-
-        preview_box = ttk.LabelFrame(mid, text="Preview", padding=10)
-        preview_box.pack(side="left", fill="both", expand=True, padx=(0, 10))
-
-        self.preview_label = ttk.Label(preview_box, text="Load an image to preview it here.", anchor="center")
-        self.preview_label.pack(fill="both", expand=True)
-
-        info_box = ttk.LabelFrame(mid, text="Notes", padding=10)
-        info_box.pack(side="right", fill="both", expand=False)
-
-        notes = (
-            'OpenGL "purple": Most common normal map type.\n\n'
-            'DirectX "purple but flipped": Used in TSS and LDK, flipped version of OpenGL.\n\n'
-            'RXGB 0 "trans blue": Used in NXG and DX11 games.\n\n'
-            'RXGB 255 "trans pink": Used in classic games and some NXG and DX11 games.\n\n'
-            'Half blue "gray": Used in NXG and DX11 games.\n\n'
-            'RXGB half blue "trans teal": Used in NXG and DX11 games, mostly for levels but sometimes for other things too.\n\n'
-            'Two channel "trans pink but weird": Used rarely in NXG and DX11 games.\n\n'
-            'Derivative "yellowish green": Used in TSS, technically supported by DX11 too.'
-        )
-        ttk.Label(info_box, text=notes, justify="left").pack(anchor="w")
-
-        bottom = ttk.Frame(outer)
-        bottom.pack(fill="x", pady=(12, 0))
-
-        self.status = tk.StringVar(value="Ready.")
-        ttk.Label(bottom, textvariable=self.status).pack(side="left")
-        ttk.Button(bottom, text="Load Input", command=self.load_input).pack(side="right", padx=(6, 0))
-        ttk.Button(bottom, text="Open Output Folder", command=self.open_output_folder).pack(side="right")
-
-    def browse_input(self):
-        path = filedialog.askopenfilename(
-            title="Choose input image",
-            filetypes=[
-                ("Image files", "*.png *.tga *.bmp *.jpg *.jpeg *.dds *.webp"),
-                ("All files", "*.*"),
-            ],
-        )
-        if path:
-            self.input_path.set(path)
-            self.load_input()
-
-    def browse_output(self):
-        path = filedialog.asksaveasfilename(
-            title="Choose output image",
-            defaultextension=".png",
-            filetypes=[
-                ("PNG", "*.png"),
-                ("TGA", "*.tga"),
-                ("BMP", "*.bmp"),
-                ("JPEG", "*.jpg *.jpeg"),
-                ("All files", "*.*"),
-            ],
-        )
-        if path:
-            self.output_path.set(path)
-
-    def load_input(self):
-        path = self.input_path.get().strip()
-        if not path:
-            return
-        if not os.path.exists(path):
-            messagebox.showerror("Missing file", "The selected input file does not exist.")
-            return
-        try:
-            self.original_image = open_image_as_rgba(path)
-            self.show_preview(self.original_image)
-            self.status.set(f"Loaded: {os.path.basename(path)}")
-        except Exception as exc:
-            messagebox.showerror("Load failed", str(exc))
-
-    def show_preview(self, image):
-        # Make the preview fit in the panel while keeping the aspect ratio.
-        preview = image.copy()
-        preview.thumbnail((500, 500))
-        self.preview_image = preview
-        self.preview_tk = ImageTk.PhotoImage(preview)
-        self.preview_label.configure(image=self.preview_tk, text="")
-
-    def convert(self):
-        if self.original_image is None:
-            self.load_input()
-        if self.original_image is None:
-            return
-
-        out_path = self.output_path.get().strip()
-        if not out_path:
-            self.browse_output()
-            out_path = self.output_path.get().strip()
-            if not out_path:
-                return
-
-        try:
-            converted = convert_image(
-                self.original_image,
-                self.source_fmt.get(),
-                self.target_fmt.get(),
-                float(self.derivative_scale.get()),
-            )
-            converted.save(out_path)
-            self.status.set(f"Saved: {out_path}")
-            self.show_preview(converted)
-        except Exception as exc:
-            messagebox.showerror("Conversion failed", str(exc))
-
-    def open_output_folder(self):
-        out_path = self.output_path.get().strip()
-        if not out_path:
-            return
-        folder = os.path.dirname(os.path.abspath(out_path))
-        if not os.path.isdir(folder):
-            return
-        try:
-            os.startfile(folder)  # Windows
-        except Exception:
-            messagebox.showinfo("Folder", folder)
+        for nrm_type in nrm_types:
+        # for each nrm type
+            if nrm_type.avrg_color is None:
+                avrg_color_scores[nrm_type].append(0)
+                continue
 
+            current_scores_expected = []
+            current_scores_always_expected = []
 
+            if nrm_type.code == 'xyz_' and current_pixel == (0,0,0,0):
+                continue #opengl normal maps sometimes have 0,0,0,0 pixels outside uv boundries and we don't want those to affect calculation
+
+            for i, (expected, always_expected) in enumerate(zip(nrm_type.avrg_color,nrm_type.always_color)):
+            # for each channel
+
+                if always_expected is not None:
+                    #check if always-expected value matches or not. always-expected has more weight and is more strict.
+                    if round(current_pixel[i]/6) == round(always_expected/6):
+                        current_scores_always_expected.append(255)
+                    else:
+                        current_scores_always_expected.append(0)
+                    continue
+
+                if expected is None:
+                    continue
+
+                current_scores_expected.append(255 - abs(current_pixel[i] - expected))
+
+            #print(current_scores_expected,current_scores_always_expected,nrm_type.display_name)
+            current_avarage = sum(current_scores_expected)/len(current_scores_expected)
+            current_avarage = (current_avarage+sum(current_scores_always_expected)) / (len(current_scores_always_expected)+1)
+
+            avrg_color_scores[nrm_type].append(current_avarage)
+
+    for name,scores in avrg_color_scores.items():
+
+        avrg_color_scores[name] = sum(scores)/len(scores) #because sometimes we skip adding scores
+        #print(name, sum(scores)/len(scores))
+
+    winners = sorted(avrg_color_scores.items(), key=lambda a: a[1], reverse=True)
+
+    winner = winners[0][0]
+
+    # common mistake: sees two-channel as rxgb 255, so check only blue channel again
+    if (winners[0][0].code=='_yzx' and
+        winners[1][0].code=='rx_y' and
+        sum(blues)/64>254):
+
+        winner = winners[1][0]
+
+    #print('winner:', winner )
+    return winner
+
+def convert_nrm_type(
+        nrm_image_orig:Image.Image,
+        src_type:Nrm_type,
+        out_type:Nrm_type,
+        brdf_image:Image.Image,
+        brdf_filename:str
+    ) -> Image.Image:
+    nrm_pixels_orig = nrm_image_orig.load()
+    width, height = nrm_image_orig.size
+    nrm_image_new:Image.Image = Image.new("RGBA", (width,height))
+    nrm_pixels_new = nrm_image_new.load()
+
+    brdf_pixels = None
+    if (
+        brdf_image is not None and
+        "r" not in src_type.code and
+        "r" in out_type.code
+    ):
+        brdf_pixels = brdf_image.load()
+        print(f"Using {brdf_filename} for roughness")
+
+    prev_rgba = None
+
+    cached = {} #orig_rgba255: new_rgba255
+    
+    for img_x in range(width):
+      for img_y in range(height):
+
+        rgba_255 = nrm_pixels_orig[img_x,img_y]
+
+        brdf_roughness_255 = 0
+        if brdf_pixels is not None:
+            brdf_roughness_255 = brdf_pixels[img_x,img_y][1]
+
+        if (rgba_255,brdf_roughness_255) in cached:
+            nrm_pixels_new[img_x,img_y] = cached[(rgba_255,brdf_roughness_255)]
+            continue
+
+        rgba_float = [c /255 *2 -1 for c in rgba_255] #-1 to 1
+
+        x=y=z= r= dx=dy= None
+
+        brdf_roughness = brdf_roughness_255/255 *2 -1
+
+        # ======= to x,y,z,r =======
+
+        for idx, nrm_val in enumerate(src_type.code):
+
+            current_channel = rgba_float[idx]
+
+            if nrm_val == "x":
+                x = current_channel
+                
+            elif nrm_val =="y":
+                y = current_channel
+            elif nrm_val =="z":
+                z = current_channel
+
+            elif nrm_val =="Y":
+                y = -current_channel
+            elif nrm_val =="Z":
+                z = current_channel+1 #normally ranged 0 to 1, here ranged -1 to 0
+                z = z if z<=1 else 1
+
+            elif nrm_val =="r":
+                r = current_channel #current_channel is normally ranged from -1 to 1, this shouldn't matter as all we're doing with the roughness channel is copying it
+
+            elif nrm_val =="d":
+                dx = current_channel
+            elif nrm_val =="D":
+                dy = current_channel
+
+        # ======= to nrm image =======
+
+        rgba_float = [0,0,0,0]
+
+        if "x" in out_type.code and x is None and dx is not None:
+            nrm_length = sqrt(dx**2 + dy**2 + 1)
+            if round(nrm_length)!=0:
+                x, y, z = -dx/nrm_length, -dy/nrm_length, 1/nrm_length
+            else:
+                x, y, z = 0, 0, 1
+
+        if "d" in out_type.code and dx is None and x is not None:
+            dx = -x/z if round(z)!=0 else 0
+            dy = -y/z if round(z)!=0 else 0
+
+        if "z" in out_type.code and z is None and x is not None:
+            z = sqrt(1 - x**2 - y**2)
+
+        if "x" in out_type.code and x is None:
+            x,y,z = 0,0,1
+
+        if "r" in out_type.code and r is None and brdf_roughness is not None:
+            r = brdf_roughness
+        
+        for idx, nrm_val in enumerate(out_type.code):
+            if nrm_val == "x":
+                rgba_float[idx] = x
+            elif nrm_val =="y":
+                rgba_float[idx] = y
+            elif nrm_val =="z":
+                rgba_float[idx] = z
+
+            elif nrm_val =="Y":
+                rgba_float[idx] = -y
+            elif nrm_val =="Z":
+                rgba_float[idx] = z-1 if z-1>=0 else 0
+
+            elif nrm_val =="r":
+                rgba_float[idx] = r
+
+            elif nrm_val =="d":
+                rgba_float[idx] = dx
+            elif nrm_val =="D":
+                rgba_float[idx] = dy
+
+            elif nrm_val == "_":
+                rgba_float[idx] = 1
+
+            elif nrm_val == "-":
+                rgba_float[idx] = -1
+
+        rgba_255_new = tuple(round((c+1)/2*255) for c in rgba_float)
+        cached[(rgba_255,brdf_roughness_255)] = rgba_255_new
+
+        nrm_pixels_new[img_x,img_y] = rgba_255_new
+
+    return nrm_image_new
+        
 def main():
-    app = NormalMapConverterApp()
-    app.mainloop()
+    try:
+        nrm_path = argv[1]
+    except IndexError:
+        nrm_path = input("Drag your image to this window to append the path, then press enter:\n").replace('"',"")
+        print()
 
+    nrm_file = Path(nrm_path)
+    # backup_nrm_file = Path(nrm_path+".bak")
 
-if __name__ == "__main__":
+    # try:
+    #     backup_nrm_file.write_bytes(
+    #         nrm_file.read_bytes()
+    #     )
+    # except FileNotFoundError:
+    #     error("Path is invalid.")
+
+    try:
+        nrm_image = Image.open(nrm_file).convert('RGBA')
+    except FileNotFoundError:
+        error("File was not found.")
+    except IOError:
+        error("Image can't be opened, likely invalid.")
+
+    brdf_image = brdf_filename= None
+
+    brdf_files = tuple(nrm_file.parent.glob(f"{nrm_file.stem}_brdf.*",case_sensitive=False))
+
+    if not brdf_files:
+        brdf_files = tuple(nrm_file.parent.glob(
+            f"{nrm_file.stem.lower()
+            .replace("_dx11","_brdf_dx11")
+            .replace("_nxg","_brdf_nxg")
+            }.*",case_sensitive=False
+        ))
+        brdf_files = [a for a in brdf_files if a!=nrm_file]
+
+    if not brdf_files:
+        brdf_files = tuple(nrm_file.parent.glob(
+            f"{nrm_file.stem.lower()
+            .replace("_normal","_brdf")
+            .replace("_norm","_brdf")
+            .replace("_nrmr","_brdf")
+            .replace("_nrm","_brdf")
+            .replace("_nm","_brdf")
+            }.*",case_sensitive=False
+        ))
+        brdf_files = [a for a in brdf_files if a!=nrm_file]
+
+    if brdf_files:
+        brdf_files_matching_ext = [
+            f for f in brdf_files
+            if f.suffix.lower() == nrm_file.suffix.lower()
+        ]
+
+        if brdf_files_matching_ext:
+            brdf_file = brdf_files_matching_ext[0]
+
+        else:
+            brdf_file = brdf_files[0]
+
+        brdf_filename = brdf_file.name
+        
+        try:
+            brdf_image = Image.open(brdf_file).convert('RGBA')
+        except IOError:
+            pass
+        else:
+            if brdf_image.size != nrm_image.size:
+                brdf_image = brdf_image.resize(nrm_image.size)
+
+    global Nrm_type
+    Nrm_type = namedtuple("Nrm_type",(
+        "display_name", "avrg_color","always_color","code"
+    ))
+
+    global nrm_types
+    nrm_types = (
+        Nrm_type('OpenGL',        (128,128,255,None),    (None,None,None,255),   "xyz_"), #purple
+        Nrm_type('OpenGL-R',      (128,128,255,None),    (None,None,None,None),  "xyzr"), #trans-purple
+        Nrm_type('DirectX',       None,                  (None,None,None,None),  "xYz_"), #purple
+        Nrm_type('RXGB',          (None,128,255,128),    (255,None,None,None),   "_yzx"), #trans-pink
+        Nrm_type('RXGB-R',        (None,128,255,128),    (None,None,None,None),  "ryzx"), #trans-blue
+        Nrm_type('B128',          (128,128,128,None),    (None,None,None,255),   "xyZ_"), #gray
+        Nrm_type('RXGB-B128-R',   (None,128,128,128),    (None,None,None,None),  "ryZx"), #trans-teal - trans-pink
+        Nrm_type('TwoChannel-R',  (None,128,None,128),   (None,None,255,None),   "_x_y"), #trans-pink
+        Nrm_type('Derivative',    (128,128,None,None),   (None,None,0,255),      "dD-_"), #green
+        Nrm_type('BRDF',          None,                  (None,None,None,None),  "_r__"), #any
+    )
+
+    detected_nrm_type = detect_nrm_type(nrm_image)
+
+    nrm_types_toprint = ''
+
+    for id,nrm_type in enumerate(nrm_types,start=1):
+
+        if nrm_type == detected_nrm_type:
+            nrm_types_toprint += f'[{id}] {nrm_type.display_name} ***\n'
+        else:
+            nrm_types_toprint += f'[{id}] {nrm_type.display_name}\n'
+
+    
+    print(
+        f"Normal map type detected as **{detected_nrm_type.display_name}** ."
+        "\nIf this is correct, type just the ID for the output nrm type.\n"
+        'Otherwise type the input ID and the output ID (so "1, 5" for '
+        "OpenGL to RXGB-R). Then press enter.\n"
+    )
+
+    print(nrm_types_toprint.strip())
+
+    error_msg = "Invalid response. Please enter a valid response."
+
+    while True:
+
+        try:
+            response = loads(f"[{input("> ")}]")
+        except JSONDecodeError:
+            print(error_msg)
+            continue
+
+        if len(response) == 1:
+            try:
+                src_nrm_type = detected_nrm_type
+                out_nrm_type = nrm_types[int(response[0])-1]
+            except IndexError, ValueError, TypeError:
+                print(error_msg)
+                continue
+
+        else:
+            try:
+                src_nrm_type = nrm_types[int(response[0])-1]
+                out_nrm_type = nrm_types[int(response[1])-1]
+            except IndexError, ValueError, TypeError:
+                print(error_msg)
+                continue
+
+        ## let's not be annoying
+        # if src_nrm_type == out_nrm_type:
+        #     print("Can't convert to source nrm type. Please enter another output nrm type.")
+        #     continue
+
+        break
+
+    print("Conversion started. Please wait...")
+    converted_nrm_image = convert_nrm_type(
+        nrm_image,
+        src_nrm_type,
+        out_nrm_type,
+        brdf_image,
+        brdf_filename,
+    )
+
+    output_nrm_file = nrm_file.parent / (nrm_file.stem + "_new_" + out_nrm_type.display_name + ".png")
+    
+    converted_nrm_image.save(output_nrm_file)
+    print("Saved.")
+
+try:
     main()
+except:
+    print("An unknown error occoured:")
+    traceback.print_exc()
+print("Press enter to close.")
+input()
+exit()
