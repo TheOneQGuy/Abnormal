@@ -86,9 +86,12 @@ def detect_nrm_type(nrm_image:Image.Image) -> Nrm_type:
     winner = winners[0][0]
 
     # common mistake: sees two-channel as rxgb 255, so check only blue channel again
+
+    #print(winners[0][0].code, winners[1][0].code, sum(blues)/64)
+
     if (winners[0][0].code=='_yzx' and
-        winners[1][0].code=='rx_y' and
-        sum(blues)/64>254):
+        winners[1][0].code=='_x_y' and
+        sum(blues)/64/64 >254):
 
         winner = winners[1][0]
 
