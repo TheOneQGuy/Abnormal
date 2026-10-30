@@ -205,7 +205,7 @@ def convert_nrm_type(
             elif nrm_val =="Y":
                 rgba_float[idx] = -y
             elif nrm_val =="Z":
-                rgba_float[idx] = z-1 if z-1>=0 else 0
+                rgba_float[idx] = z-1 if z-1>=-1 else -1
 
             elif nrm_val =="r":
                 rgba_float[idx] = r
